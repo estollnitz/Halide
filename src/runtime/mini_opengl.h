@@ -161,10 +161,14 @@ typedef void (*PFNGLGETVERTEXATTRIBIVPROC) (GLuint index, GLenum pname, GLint *p
 #define GL_MINOR_VERSION 0x821C
 #define GL_NUM_EXTENSIONS 0x821D
 #define GL_RG 0x8227
+#define GL_R16F 0x822D
+#define GL_RG16F 0x822F
+#define GL_RGB16F 0x881B
+#define GL_RGBA16F 0x881A
 #define GL_R32F 0x822E
 #define GL_RG32F 0x8230
-#define GL_RGBA32F 0x8814
 #define GL_RGB32F 0x8815
+#define GL_RGBA32F 0x8814
 #define GL_LUMINANCE32F 0x8818
 #define GL_VERTEX_ARRAY_BINDING 0x85B5
 

@@ -192,8 +192,8 @@ struct GlobalState {
     int major_version, minor_version;
     bool have_vertex_array_objects;
     bool have_texture_rg;
-    bool have_texture_float;
-    bool have_texture_rgb8_rgba8;
+    bool have_color_buffer_float;
+    bool have_color_buffer_half_float;
 
     // Various objects shared by all filter kernels
     GLuint framebuffer_id;
@@ -582,7 +582,8 @@ WEAK void GlobalState::init() {
     textures = NULL;
     have_vertex_array_objects = false;
     have_texture_rg = false;
-    have_texture_rgb8_rgba8 = false;
+    have_color_buffer_float = false;
+    have_color_buffer_half_float = false;
     // Initialize all GL function pointers to NULL
 #define GLFUNC(type, name) name = NULL;
     USED_GL_FUNCTIONS;
@@ -641,17 +642,19 @@ WEAK void init_extensions(void *user_context) {
         (global_state.profile == OpenGLES &&
          extension_supported(user_context, "GL_EXT_texture_rg"));
 
-    global_state.have_texture_rgb8_rgba8 =
-        global_state.major_version >= 3 ||
-        (global_state.profile == OpenGLES &&
-         extension_supported(user_context, "GL_OES_rgb8_rgba8"));
-
-    global_state.have_texture_float =
-        (global_state.major_version >= 3) ||
+    global_state.have_color_buffer_float =
         (global_state.profile == OpenGL &&
-         extension_supported(user_context, "GL_ARB_texture_float")) ||
+         (global_state.major_version >= 3 ||
+          extension_supported(user_context, "GL_ARB_texture_float"))) ||
         (global_state.profile == OpenGLES &&
-         extension_supported(user_context, "GL_OES_texture_float"));
+         extension_supported(user_context, "GL_EXT_color_buffer_float"));
+
+    global_state.have_color_buffer_half_float =
+        (global_state.profile == OpenGL &&
+         (global_state.major_version >= 3 ||
+          extension_supported(user_context, "GL_ARB_texture_float"))) ||
+        (global_state.profile == OpenGLES &&
+         extension_supported(user_context, "GL_EXT_color_buffer_half_float"));
 }
 
 WEAK const char *parse_int(const char *str, int *val) {
@@ -721,10 +724,10 @@ WEAK int halide_opengl_init(void *user_context) {
     init_extensions(user_context);
     debug(user_context)
         << "Halide running on OpenGL " << ((global_state.profile == OpenGL) ? "" : "ES ") << major << "." << minor << "\n"
-        << "  vertex_array_objects: " << (global_state.have_vertex_array_objects ? "yes\n" : "no\n")
-        << "  texture_rg: " << (global_state.have_texture_rg ? "yes\n" : "no\n")
-        << "  have_texture_rgb8_rgba8: " << (global_state.have_texture_rgb8_rgba8 ? "yes\n" : "no\n")
-        << "  texture_float: " << (global_state.have_texture_float ? "yes\n" : "no\n");
+        << "  have_vertex_array_objects: " << (global_state.have_vertex_array_objects ? "yes\n" : "no\n")
+        << "  have_texture_rg: " << (global_state.have_texture_rg ? "yes\n" : "no\n")
+        << "  have_color_buffer_float: " << (global_state.have_color_buffer_float ? "yes\n" : "no\n")
+        << "  have_color_buffer_half_float: " << (global_state.have_color_buffer_half_float ? "yes\n" : "no\n");
 
     // Initialize framebuffer.
     global_state.GenFramebuffers(1, &global_state.framebuffer_id);
@@ -811,9 +814,9 @@ WEAK int halide_opengl_device_release(void *user_context) {
     return 0;
 }
 
-// Determine OpenGL texture format and channel type for a given buffer_t.
-WEAK bool get_texture_format(void *user_context, buffer_t *buf,
-                             GLint *internal_format, GLint *format, GLint *type) {
+// Determine OpenGL data format and channel type for a given buffer_t.
+WEAK bool get_data_format(void *user_context, buffer_t *buf,
+                          GLint *format, GLint *type) {
     if (buf->elem_size == 1) {
         *type = GL_UNSIGNED_BYTE;
     } else if (buf->elem_size == 2) {
@@ -860,12 +863,52 @@ WEAK bool get_texture_format(void *user_context, buffer_t *buf,
         return false;
     }
 
+    return true;
+}
+
+// Determine OpenGL internal texture format, data format, and channel type for a given buffer_t.
+WEAK bool get_texture_format(void *user_context, buffer_t *buf,
+                             GLint *internal_format, GLint *format, GLint *type) {
+    if (!get_data_format(user_context, buf, format, type)) {
+        return false;
+    }
+
+    if (*type == GL_FLOAT &&
+        !global_state.have_color_buffer_float &&
+        !global_state.have_color_buffer_half_float) {
+        error(user_context) << "OpenGL: Float textures are not supported by this version of OpenGL.";
+        return false;
+    }
+
     switch (global_state.profile) {
     case OpenGLES:
-        // For OpenGL ES, the texture format has to match the pixel format
-        // since there no conversion is performed during texture transfers.
-        // See OES_texture_float.
-        *internal_format = *format;
+        // For OpenGL ES 2.0, the internal format has to match the data format
+        // since no conversion is performed during texture transfers.
+        // When the GL_EXT_color_buffer_float or GL_EXT_color_buffer_half_float
+        // extension is supported, the internal format must be specified
+        // precisely for float types.
+        if (*type == GL_FLOAT) {
+            switch (*format) {
+            case GL_RED:
+                *internal_format = global_state.have_color_buffer_float ? GL_R32F : GL_R16F;
+                break;
+            case GL_RG:
+                *internal_format = global_state.have_color_buffer_float ? GL_RG32F : GL_RG16F;
+                break;
+            case GL_RGB:
+                *internal_format = global_state.have_color_buffer_float ? GL_RGB32F : GL_RGB16F;
+                break;
+            case GL_RGBA:
+                *internal_format = global_state.have_color_buffer_float ? GL_RGBA32F : GL_RGBA16F;
+                break;
+            default:
+                error(user_context) << "OpenGL: Cannot select internal format for format " << *format;
+                return false;
+            }
+        }
+        else {
+            *internal_format = *format;
+        }
         break;
     case OpenGL:
         // For desktop OpenGL, the internal format specifiers include the
@@ -1193,9 +1236,9 @@ WEAK int halide_opengl_copy_to_device(void *user_context, buffer_t *buf) {
     if (global_state.CheckAndReportError(user_context, "halide_opengl_copy_to_device BindTexture")) {
         return 1;
     }
-    GLint internal_format, format, type;
-    if (!get_texture_format(user_context, buf, &internal_format, &format, &type)) {
-        error(user_context) << "Invalid texture format";
+    GLint format, type;
+    if (!get_data_format(user_context, buf, &format, &type)) {
+        error(user_context) << "Invalid data format";
         return 1;
     }
 
@@ -1265,9 +1308,9 @@ WEAK int halide_opengl_copy_to_host(void *user_context, buffer_t *buf) {
         return 1;
     }
 
-    GLint internal_format, format, type;
-    if (!get_texture_format(user_context, buf, &internal_format, &format, &type)) {
-        error(user_context) << "Invalid texture format";
+    GLint format, type;
+    if (!get_data_format(user_context, buf, &format, &type)) {
+        error(user_context) << "Invalid data format";
         return 1;
     }
 
